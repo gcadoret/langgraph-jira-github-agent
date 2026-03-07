@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional, TypedDict, Any
 
 from langgraph.graph import StateGraph, START, END
 
 from agent_harness.config import Settings
 from agent_harness.llm import PlannerLLM
-from agent_harness.sandbox import create_sandbox, cleanup_sandbox
 from agent_harness.tools.jira import JiraClient
 from agent_harness.tools.github import GitHubClient, git_prepare_patch, git_push
 
@@ -21,6 +19,9 @@ class AgentState(TypedDict, total=False):
     issue_description: str
     # outputs
     plan_markdown: str
+    plan_task_type: str
+    plan_model_choice: str
+    plan_model_name: str
     pr_url: Optional[str]
     notes: str
 
@@ -45,7 +46,20 @@ def build_graph(settings: Settings):
 
     def make_plan(state: AgentState) -> dict:
         res = planner.make_plan(state["issue_key"], state.get("issue_summary",""), state.get("issue_description",""))
-        return {"plan_markdown": res.plan_markdown, "notes": f"confidence={res.confidence}"}
+        notes = (
+            f"confidence={res.confidence}; "
+            f"task_type={res.task_type.value}; "
+            f"route={res.model_choice.value}; "
+            f"model={res.model_name}; "
+            f"mock={str(res.is_mock).lower()}"
+        )
+        return {
+            "plan_markdown": res.plan_markdown,
+            "plan_task_type": res.task_type.value,
+            "plan_model_choice": res.model_choice.value,
+            "plan_model_name": res.model_name,
+            "notes": notes,
+        }
 
     def comment_plan(state: AgentState) -> dict:
         body = f"""Plan proposé par l'agent (dry-run={state.get('dry_run', True)})

@@ -2,7 +2,7 @@
 
 This repository is a **minimal starter** (not a heavy-duty framework) for a single agent based on **LangGraph** that can:
 - Read a Jira ticket
-- Produce a plan (using an LLM or in "mock" mode if no key is provided)
+- Produce a plan (routed to an advanced LLM, or deterministic mock mode if no key is provided)
 - (Optional) Create a branch + a simple patch in a sandbox
 - Open a GitHub PR
 - Comment on the Jira ticket with the plan / PR link
@@ -37,9 +37,42 @@ cp .env.example .env
 - `JIRA_PROJECT_KEY` (optional, useful for creating tickets)
 - `GITHUB_TOKEN`
 - `GITHUB_REPO` ex: `org/repo`
-- `OPENAI_API_KEY` (optional)
+- `ADVANCED_PROVIDER` ex: `openai` or `gemini`
+- `ADVANCED_API_KEY` for the advanced model (optional, planning falls back to a deterministic mock if absent)
+- `ADVANCED_MODEL_NAME` ex: `gpt-4.1-mini`
+- `ADVANCED_BASE_URL` optional override for provider-specific endpoints
+- `OLLAMA_BASE_URL` ex: `http://localhost:11434`
+- `OLLAMA_MODEL` ex: `llama3.1:8b`
 
-## 4) Running the Agent
+For backward compatibility, `OPENAI_API_KEY` is still accepted as a fallback, but `ADVANCED_API_KEY` is the preferred name.
+
+## 4) Hybrid LLM Routing
+
+The project now uses an explicit `TaskType` enum and a small router instead of ad-hoc model selection.
+
+### Task routing
+- `PLANNING` -> `ADVANCED`
+- `REASONING` -> `ADVANCED`
+- `CRITIQUE` -> `ADVANCED`
+- `JIRA_DRAFTING` -> `LOCAL`
+- `SUMMARIZATION` -> `LOCAL`
+- `FIELD_EXTRACTION` -> `LOCAL`
+- `FORMAT_TRANSFORMATION` -> `LOCAL`
+- `TOOL_SUPPORT` -> `LOCAL`
+
+### Components
+- `agent_harness/router.py`: explicit task-to-model mapping
+- `agent_harness/advanced_model.py`: advanced provider wrapper (`openai` or `gemini`)
+- `agent_harness/ollama_client.py`: lightweight Ollama HTTP wrapper using `requests`
+- `agent_harness/llm.py`: routed LLM entrypoint used by the graph
+
+Today, the LangGraph planning node uses `TaskType.PLANNING`, so planning always goes through the advanced route. Operational local tasks are ready to use for future nodes such as Jira drafting or extraction.
+
+### Advanced provider examples
+- OpenAI: `ADVANCED_PROVIDER=openai`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gpt-4.1-mini`
+- Gemini: `ADVANCED_PROVIDER=gemini`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gemini-2.5-pro`
+
+## 5) Running the Agent
 
 ### Dry-run (recommended for starters)
 ```bash
@@ -59,12 +92,13 @@ This command enables the "action" mode. Unlike dry-run, the agent will actually 
 
 **Warning:** This mode actually modifies the Git repository. The path provided in `--repo-path` is mandatory.
 
-## 5) What This Starter Actually Does
+## 6) What This Starter Actually Does
 - It doesn't claim to be Devin.
 - It gives you a clean skeleton:
   - **LangGraph** for orchestration
   - Isolated Jira/GitHub **tools**
-  - A basic "sandbox" (working directory) to prepare a patch
+  - Explicit LLM routing by task type
+  - A deterministic fallback when no advanced model is configured
 
 You can then:
 - Connect it to your CI (GitHub Actions / Jenkins / GitLab CI)
@@ -75,14 +109,28 @@ You can then:
 
 ```
 agent_harness/
+  advanced_model.py   # Advanced model wrapper
   graph.py            # LangGraph graph definition
   run.py              # CLI entrypoint
   config.py           # .env loader
-  llm.py              # LLM wrapper (optional OpenAI) + mock mode
+  llm.py              # Routed LLM entrypoint + planner wrapper
+  ollama_client.py    # Ollama HTTP wrapper
+  router.py           # TaskType -> model routing
+  task_types.py       # Explicit task categories
   tools/
     jira.py           # Jira API (read/comment/create/update)
     github.py         # GitHub API (create PR) + git helpers
   sandbox.py          # Ephemeral workspace
+tests/
+  test_router.py      # Lightweight router coverage
+```
+
+## 7) Testing
+
+Run the lightweight router tests with:
+
+```bash
+python3 -m unittest discover -s tests
 ```
 
 ## Security Notes (to keep in mind)

@@ -83,12 +83,13 @@ In `--action` mode, the graph now chains three intelligent agents: planner, exec
 Validation and review rules are no longer meant to live primarily in Python classes. The project loads markdown profiles from `agent_harness/prompts/` by default:
 
 - `validation/*.md` selects a validator profile based on repo markers such as `pubspec.yaml`
-- each validation profile defines command candidates and blocking severities
+- each validation profile defines repo markers, priority, command candidates, severity patterns, and blocking severities
 - `review/default.md` defines the reviewer system prompt, excerpt strategy, and review rules
 
 Example `flutter.md` policy:
 - detect a Flutter repo with `pubspec.yaml`
 - try `flutter analyze`, then `dart analyze`
+- parse severities with configurable regex patterns
 - block only on `error`
 - keep `warning` and `info` as advisory findings
 

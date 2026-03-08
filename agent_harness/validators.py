@@ -11,15 +11,6 @@ from agent_harness.config import Settings
 from agent_harness.prompt_store import PromptStore
 
 
-SEVERITY_ORDER = {
-    "info": 1,
-    "warning": 2,
-    "error": 3,
-}
-
-ISSUE_PATTERN = re.compile(r"^\s*(error|warning|info)\b", flags=re.IGNORECASE)
-
-
 @dataclass(frozen=True)
 class ValidationIssue:
     severity: str
@@ -40,9 +31,11 @@ class ValidationResult:
 @dataclass(frozen=True)
 class ValidationProfile:
     name: str
+    priority: int
     match_files: tuple[str, ...]
     command_candidates: tuple[str, ...]
     blocking_severities: tuple[str, ...]
+    severity_patterns: dict[str, str]
     allow_nonzero_without_blockers: bool
     review_guidance: str
 
@@ -50,9 +43,11 @@ class ValidationProfile:
     def from_prompt(cls, prompt) -> "ValidationProfile":
         return cls(
             name=prompt.get("name", prompt.path.stem),
+            priority=prompt.get_int("priority", 0),
             match_files=prompt.get_list("match_files"),
             command_candidates=prompt.get_list("command_candidates", separator="|"),
             blocking_severities=prompt.get_list("blocking_severities"),
+            severity_patterns=_parse_severity_patterns(prompt.get("severity_patterns")),
             allow_nonzero_without_blockers=prompt.get_bool("allow_nonzero_without_blockers", False),
             review_guidance=prompt.body,
         )
@@ -123,11 +118,11 @@ class ConfiguredCommandValidator(ProjectValidator):
     def _extract_issues(self, output: str) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         for raw_line in output.splitlines():
-            match = ISSUE_PATTERN.match(raw_line)
-            if not match:
-                continue
-            severity = match.group(1).lower()
-            issues.append(ValidationIssue(severity=severity, line=raw_line.strip()))
+            line = raw_line.strip()
+            for severity, pattern in self.profile.severity_patterns.items():
+                if re.search(pattern, line, flags=re.IGNORECASE):
+                    issues.append(ValidationIssue(severity=severity, line=line))
+                    break
         return issues
 
     def _build_status(self, passed: bool, issues: list[ValidationIssue]) -> str:
@@ -163,13 +158,15 @@ class ValidationProfileRegistry:
         if not matching_profiles:
             return ValidationProfile(
                 name="default",
+                priority=0,
                 match_files=(),
                 command_candidates=(),
                 blocking_severities=("error",),
+                severity_patterns=_default_severity_patterns(),
                 allow_nonzero_without_blockers=False,
                 review_guidance="No validation guidance configured.",
             )
-        matching_profiles.sort(key=lambda profile: len(profile.match_files), reverse=True)
+        matching_profiles.sort(key=lambda profile: (profile.priority, len(profile.match_files)), reverse=True)
         return matching_profiles[0]
 
     def _matches(self, repo_root: Path, profile: ValidationProfile) -> bool:
@@ -202,3 +199,27 @@ class ProjectValidatorFactory:
             if Path(executable).exists() or shutil.which(executable):
                 return parts
         return None
+
+
+def _parse_severity_patterns(raw_value: str) -> dict[str, str]:
+    if not raw_value:
+        return _default_severity_patterns()
+
+    patterns: dict[str, str] = {}
+    for entry in raw_value.split(";"):
+        item = entry.strip()
+        if not item:
+            continue
+        severity, separator, pattern = item.partition("=>")
+        if not separator:
+            continue
+        patterns[severity.strip().lower()] = pattern.strip()
+    return patterns or _default_severity_patterns()
+
+
+def _default_severity_patterns() -> dict[str, str]:
+    return {
+        "error": r"^\s*error\b",
+        "warning": r"^\s*warning\b",
+        "info": r"^\s*info\b",
+    }

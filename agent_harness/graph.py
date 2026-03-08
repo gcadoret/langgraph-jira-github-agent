@@ -117,7 +117,7 @@ _(notes: {state.get('notes','')})_
 
         repo_path = state["repo_path"]
         issue_key = state["issue_key"]
-        branch = f"ai/{issue_key.lower()}"
+        branch = f"fix/{issue_key.lower()}"
         from pathlib import Path
         repo_root = Path(repo_path)
         git_checkout_branch(repo_root, branch=branch)

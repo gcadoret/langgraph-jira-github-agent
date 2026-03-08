@@ -15,6 +15,7 @@ def main():
     args = p.parse_args()
 
     settings = get_settings()
+    repo_path = args.repo_path or settings.default_repo_path
 
     # Priorité: flags CLI
     dry_run = True
@@ -22,14 +23,14 @@ def main():
         dry_run = False
     if args.dry_run:
         dry_run = True
-    if not dry_run and not args.repo_path:
+    if not dry_run and not repo_path:
         raise SystemExit("--repo-path requis en mode --action")
 
     graph = build_graph(settings)
     initial_state = {
         "issue_key": args.issue,
         "dry_run": dry_run,
-        "repo_path": args.repo_path,
+        "repo_path": repo_path,
     }
     result = graph.invoke(initial_state)
     print(json.dumps(result, indent=2, ensure_ascii=False))

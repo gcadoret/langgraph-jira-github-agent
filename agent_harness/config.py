@@ -24,6 +24,7 @@ class Settings:
     # GitHub
     github_token: str | None = os.getenv("GITHUB_TOKEN")
     github_repo: str | None = os.getenv("GITHUB_REPO")
+    default_repo_path: str | None = os.getenv("DEFAULT_REPO_PATH")
 
     # Advanced LLM
     advanced_provider: str = os.getenv("ADVANCED_PROVIDER", "openai")

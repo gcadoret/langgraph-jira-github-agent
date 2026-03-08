@@ -37,6 +37,7 @@ cp .env.example .env
 - `JIRA_PROJECT_KEY` (optional, useful for creating tickets)
 - `GITHUB_TOKEN`
 - `GITHUB_REPO` ex: `org/repo`
+- `DEFAULT_REPO_PATH` optional local repo path used when `--repo-path` is omitted
 - `ADVANCED_PROVIDER` ex: `openai` or `gemini`
 - `ADVANCED_API_KEY` for the advanced model (optional, planning falls back to a deterministic mock if absent)
 - `ADVANCED_MODEL_NAME` ex: `gpt-4.1-mini`
@@ -129,6 +130,14 @@ This command enables the "action" mode. Unlike dry-run, the agent will actually 
 4. Finally, it opens a Pull Request and updates the Jira ticket with a link to it.
 
 **Warning:** This mode actually modifies the Git repository. The path provided in `--repo-path` is mandatory.
+
+If you always work on the same repository, you can set `DEFAULT_REPO_PATH` in `.env` and shorten the command to:
+
+```bash
+python3 -m agent_harness.run --issue <JIRA_KEY> --action
+```
+
+The CLI flag still has priority over the `.env` default.
 
 ## 6) What This Starter Actually Does
 - It doesn't claim to be Devin.

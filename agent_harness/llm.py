@@ -18,6 +18,7 @@ class PlanResult:
     model_choice: ModelChoice
     model_name: str
     is_mock: bool
+    fallback_reason: str | None = None
 
 
 @dataclass
@@ -27,6 +28,7 @@ class LLMResponse:
     model_choice: ModelChoice
     model_name: str
     is_mock: bool
+    fallback_reason: str | None = None
 
 
 class RoutedLLM:
@@ -44,24 +46,38 @@ class RoutedLLM:
     ) -> LLMResponse:
         route = self.router.route(task_type)
 
-        if route.model_choice == ModelChoice.ADVANCED and self.advanced_model.is_configured():
-            result = self.advanced_model.complete(prompt=prompt, system_prompt=system_prompt)
-            return LLMResponse(
-                content=result["content"],
-                task_type=task_type,
-                model_choice=route.model_choice,
-                model_name=result["model_name"],
-                is_mock=bool(result["is_mock"]),
-            )
+        try:
+            if route.model_choice == ModelChoice.ADVANCED and self.advanced_model.is_configured():
+                result = self.advanced_model.complete(prompt=prompt, system_prompt=system_prompt)
+                return LLMResponse(
+                    content=result["content"],
+                    task_type=task_type,
+                    model_choice=route.model_choice,
+                    model_name=result["model_name"],
+                    is_mock=bool(result["is_mock"]),
+                )
 
-        if route.model_choice == ModelChoice.LOCAL and self.local_model.is_configured():
-            result = self.local_model.complete(prompt=prompt, system_prompt=system_prompt)
+            if route.model_choice == ModelChoice.LOCAL and self.local_model.is_configured():
+                result = self.local_model.complete(prompt=prompt, system_prompt=system_prompt)
+                return LLMResponse(
+                    content=result["content"],
+                    task_type=task_type,
+                    model_choice=route.model_choice,
+                    model_name=result["model_name"],
+                    is_mock=bool(result["is_mock"]),
+                )
+        except Exception as exc:
+            if not fallback_text:
+                raise
+            fallback_reason = f"{type(exc).__name__}: {exc}"
+            fallback_model_name = f"mock-{route.model_choice.value}"
             return LLMResponse(
-                content=result["content"],
+                content=fallback_text,
                 task_type=task_type,
                 model_choice=route.model_choice,
-                model_name=result["model_name"],
-                is_mock=bool(result["is_mock"]),
+                model_name=fallback_model_name,
+                is_mock=True,
+                fallback_reason=fallback_reason,
             )
 
         fallback_model_name = f"mock-{route.model_choice.value}"
@@ -71,6 +87,7 @@ class RoutedLLM:
             model_choice=route.model_choice,
             model_name=fallback_model_name,
             is_mock=True,
+            fallback_reason=None,
         )
 
 
@@ -84,7 +101,13 @@ class PlannerLLM:
     def __init__(self, settings: Settings):
         self._llm = RoutedLLM(settings)
 
-    def make_plan(self, issue_key: str, issue_summary: str, issue_description: str) -> PlanResult:
+    def make_plan(
+        self,
+        issue_key: str,
+        issue_summary: str,
+        issue_description: str,
+        repo_context: str = "",
+    ) -> PlanResult:
         missing = []
         if not issue_description or len(issue_description.strip()) < 20:
             missing.append("Description trop courte (ajouter contexte, logs, étapes de repro)")
@@ -119,6 +142,8 @@ Titre: {issue_summary}
 Description:
 {issue_description}
 """
+        if repo_context:
+            prompt += f"\nContexte repo:\n{repo_context}\n"
 
         response = self._llm.invoke(
             task_type=TaskType.PLANNING,
@@ -144,4 +169,5 @@ Liste les informations manquantes si nécessaire.""",
             model_choice=response.model_choice,
             model_name=response.model_name,
             is_mock=response.is_mock,
+            fallback_reason=response.fallback_reason,
         )

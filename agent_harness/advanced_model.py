@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import random
+import time
 from typing import Any
 
 from agent_harness.config import Settings
@@ -23,6 +25,9 @@ class AdvancedProvider(str, Enum):
 
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_MAX_RETRIES = 4
+DEFAULT_INITIAL_BACKOFF_SECONDS = 1.0
+DEFAULT_MAX_BACKOFF_SECONDS = 16.0
 
 
 @dataclass
@@ -33,6 +38,7 @@ class AdvancedModelClient:
     base_url: str | None = None
     temperature: float = 0.2
     timeout_seconds: int = 120
+    max_retries: int = DEFAULT_MAX_RETRIES
 
     def __post_init__(self) -> None:
         self._llm = None
@@ -109,16 +115,14 @@ class AdvancedModelClient:
         if system_prompt:
             payload["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
-        response = requests.post(
-            url,
+        response = self._post_with_retry(
+            url=url,
             headers={
                 "Content-Type": "application/json",
                 "x-goog-api-key": self.api_key or "",
             },
-            json=payload,
-            timeout=self.timeout_seconds,
+            payload=payload,
         )
-        response.raise_for_status()
         data = response.json()
 
         return {
@@ -141,3 +145,53 @@ class AdvancedModelClient:
         if text_parts:
             return "\n".join(text_parts).strip()
         raise RuntimeError("Gemini response did not contain any text parts")
+
+    def _post_with_retry(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> Any:
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = requests.post(  # type: ignore[union-attr]
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError as exc:  # type: ignore[union-attr]
+                last_error = exc
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code not in {429, 500, 502, 503, 504} or attempt >= self.max_retries:
+                    raise
+                time.sleep(self._retry_delay_seconds(attempt=attempt, response=exc.response))
+
+        if last_error is not None:  # pragma: no cover
+            raise last_error
+        raise RuntimeError("Gemini request failed without producing a response")  # pragma: no cover
+
+    def _retry_delay_seconds(self, attempt: int, response: Any | None) -> float:
+        retry_after_seconds = self._parse_retry_after_seconds(response)
+        backoff_seconds = min(
+            DEFAULT_INITIAL_BACKOFF_SECONDS * (2 ** attempt),
+            DEFAULT_MAX_BACKOFF_SECONDS,
+        )
+        jitter_seconds = random.random()
+
+        if retry_after_seconds is not None:
+            return max(retry_after_seconds, backoff_seconds + jitter_seconds)
+        return backoff_seconds + jitter_seconds
+
+    @staticmethod
+    def _parse_retry_after_seconds(response: Any | None) -> float | None:
+        if response is None:
+            return None
+
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is None:
+            return None
+
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            return None

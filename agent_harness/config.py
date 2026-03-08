@@ -37,6 +37,8 @@ class Settings:
 
     # Behaviour
     dry_run_default: bool = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes", "y")
+    max_review_iterations: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "3"))
+    prompts_dir: str | None = os.getenv("PROMPTS_DIR")
 
 
 def get_settings() -> Settings:

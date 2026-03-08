@@ -5,6 +5,7 @@ from enum import Enum
 
 class TaskType(str, Enum):
     PLANNING = "planning"
+    IMPLEMENTATION = "implementation"
     REASONING = "reasoning"
     CRITIQUE = "critique"
     JIRA_DRAFTING = "jira_drafting"

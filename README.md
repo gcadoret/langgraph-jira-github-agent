@@ -43,6 +43,8 @@ cp .env.example .env
 - `ADVANCED_BASE_URL` optional override for provider-specific endpoints
 - `OLLAMA_BASE_URL` ex: `http://localhost:11434`
 - `OLLAMA_MODEL` ex: `llama3.1:8b`
+- `MAX_REVIEW_ITERATIONS` max revision loops for executor/reviewer in action mode
+- `PROMPTS_DIR` optional directory override for markdown-based validation/review profiles
 
 For backward compatibility, `OPENAI_API_KEY` is still accepted as a fallback, but `ADVANCED_API_KEY` is the preferred name.
 
@@ -63,14 +65,50 @@ The project now uses an explicit `TaskType` enum and a small router instead of a
 ### Components
 - `agent_harness/router.py`: explicit task-to-model mapping
 - `agent_harness/advanced_model.py`: advanced provider wrapper (`openai` or `gemini`)
+- `agent_harness/code_executor.py`: targeted code-edit executor for action mode
 - `agent_harness/ollama_client.py`: lightweight Ollama HTTP wrapper using `requests`
+- `agent_harness/repo_context.py`: cached repository context builder for planning
+- `agent_harness/reviewer.py`: review/critique agent for implementation feedback
+- `agent_harness/validators.py`: markdown-driven validation abstraction
+- `agent_harness/prompts/validation/*.md`: validation profiles (repo detection, commands, blocking severities)
+- `agent_harness/prompts/review/default.md`: reviewer prompt and excerpt policy
 - `agent_harness/llm.py`: routed LLM entrypoint used by the graph
 
-Today, the LangGraph planning node uses `TaskType.PLANNING`, so planning always goes through the advanced route. Operational local tasks are ready to use for future nodes such as Jira drafting or extraction.
+Today, the LangGraph planning node uses `TaskType.PLANNING`, so planning always goes through the advanced route. When `--repo-path` is provided, the graph also loads a cached repository context and injects a targeted summary/snippets into the planning prompt. Operational local tasks are ready to use for future nodes such as Jira drafting or extraction.
+In `--action` mode, the graph now chains three intelligent agents: planner, executor, reviewer. The reviewer combines markdown-driven validation policies with an LLM critique, and the graph retries bounded revisions before commit/PR.
+
+## 4.1) Prompt-Driven Validation Profiles
+
+Validation and review rules are no longer meant to live primarily in Python classes. The project loads markdown profiles from `agent_harness/prompts/` by default:
+
+- `validation/*.md` selects a validator profile based on repo markers such as `pubspec.yaml`
+- each validation profile defines command candidates and blocking severities
+- `review/default.md` defines the reviewer system prompt, excerpt strategy, and review rules
+
+Example `flutter.md` policy:
+- detect a Flutter repo with `pubspec.yaml`
+- try `flutter analyze`, then `dart analyze`
+- block only on `error`
+- keep `warning` and `info` as advisory findings
+
+If you want to customize this without editing the package defaults, point `PROMPTS_DIR` to your own directory containing:
+
+```text
+<prompts-dir>/
+  review/
+    default.md
+  validation/
+    default.md
+    flutter.md
+    your_other_stack.md
+```
 
 ### Advanced provider examples
 - OpenAI: `ADVANCED_PROVIDER=openai`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gpt-4.1-mini`
 - Gemini: `ADVANCED_PROVIDER=gemini`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gemini-2.5-pro`
+
+For Gemini, the client applies bounded retries with exponential backoff on transient `429` and `5xx` responses.
+If the advanced provider still fails after retries, planning falls back to the deterministic mock plan so the graph can keep running.
 
 ## 5) Running the Agent
 
@@ -115,6 +153,8 @@ agent_harness/
   config.py           # .env loader
   llm.py              # Routed LLM entrypoint + planner wrapper
   ollama_client.py    # Ollama HTTP wrapper
+  prompt_store.py     # Markdown prompt/profile loader
+  prompts/            # Built-in review and validation profiles
   router.py           # TaskType -> model routing
   task_types.py       # Explicit task categories
   tools/
@@ -122,6 +162,8 @@ agent_harness/
     github.py         # GitHub API (create PR) + git helpers
   sandbox.py          # Ephemeral workspace
 tests/
+  test_code_executor.py # Lightweight implementation executor coverage
+  test_repo_context.py # Lightweight cached repo-context coverage
   test_router.py      # Lightweight router coverage
 ```
 

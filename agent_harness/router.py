@@ -14,6 +14,7 @@ class ModelChoice(str, Enum):
 
 DEFAULT_TASK_MODEL_MAP: dict[TaskType, ModelChoice] = {
     TaskType.PLANNING: ModelChoice.ADVANCED,
+    TaskType.IMPLEMENTATION: ModelChoice.ADVANCED,
     TaskType.REASONING: ModelChoice.ADVANCED,
     TaskType.CRITIQUE: ModelChoice.ADVANCED,
     TaskType.JIRA_DRAFTING: ModelChoice.LOCAL,

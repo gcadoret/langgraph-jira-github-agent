@@ -34,6 +34,7 @@ class ReviewerTests(unittest.TestCase):
                 validator_name="flutter",
                 summary="flutter analyze failed.",
                 output="error: does not compile",
+                error_count=1,
             )
 
             with mock.patch.object(reviewer._llm, "invoke") as invoke_mock:
@@ -51,6 +52,8 @@ class ReviewerTests(unittest.TestCase):
             self.assertFalse(result.approved)
             self.assertEqual(result.summary, "Looks good.")
             self.assertIn("does not compile", result.feedback)
+            self.assertIn("validator=flutter", result.validation_summary)
+            self.assertIn("errors=1", result.validation_summary)
 
     def test_file_context_uses_head_tail_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -72,3 +75,25 @@ class ReviewerTests(unittest.TestCase):
 
             self.assertIn("... [TRUNCATED] ...", file_context)
             self.assertIn("TAIL_MARKER", file_context)
+
+    def test_validation_summary_can_be_disabled(self) -> None:
+        reviewer = CodeReviewer(
+            Settings(
+                advanced_provider="openai",
+                advanced_api_key=None,
+                advanced_model_name="gpt-4.1-mini",
+                ollama_base_url="http://localhost:11434",
+                ollama_model="llama3.1:8b",
+                enable_validation_summary=False,
+            )
+        )
+        summary = reviewer._build_validation_summary(
+            ValidationResult(
+                passed=True,
+                status="passed",
+                validator_name="flutter",
+                summary="flutter analyze passed.",
+                output="",
+            )
+        )
+        self.assertEqual(summary, "")

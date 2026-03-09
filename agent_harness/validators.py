@@ -26,6 +26,9 @@ class ValidationResult:
     output: str
     command: str = ""
     review_guidance: str = ""
+    error_count: int = 0
+    warning_count: int = 0
+    info_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,9 @@ class ProjectValidator:
             validator_name=self.name,
             summary="No project-specific validator configured.",
             output="",
+            error_count=0,
+            warning_count=0,
+            info_count=0,
         )
 
 
@@ -81,6 +87,9 @@ class ConfiguredCommandValidator(ProjectValidator):
                 summary=f"No available command for validation profile '{self.profile.name}'.",
                 output="",
                 review_guidance=self.profile.review_guidance,
+                error_count=0,
+                warning_count=0,
+                info_count=0,
             )
 
         repo_root = Path(repo_path).expanduser().resolve()
@@ -104,7 +113,8 @@ class ConfiguredCommandValidator(ProjectValidator):
             passed = False
 
         status = self._build_status(passed=passed, issues=issues)
-        summary = self._build_summary(issues=issues, passed=passed, returncode=process.returncode)
+        counts = self._count_issues(issues)
+        summary = self._build_summary(counts=counts, passed=passed, returncode=process.returncode)
         return ValidationResult(
             passed=passed,
             status=status,
@@ -113,6 +123,9 @@ class ConfiguredCommandValidator(ProjectValidator):
             output=output,
             command=" ".join(self.command),
             review_guidance=self.profile.review_guidance,
+            error_count=counts["error"],
+            warning_count=counts["warning"],
+            info_count=counts["info"],
         )
 
     def _extract_issues(self, output: str) -> list[ValidationIssue]:
@@ -132,15 +145,17 @@ class ConfiguredCommandValidator(ProjectValidator):
             return "passed_with_findings"
         return "passed"
 
-    def _build_summary(self, issues: list[ValidationIssue], passed: bool, returncode: int) -> str:
-        command_text = " ".join(self.command or [])
-        counts = {
+    def _count_issues(self, issues: list[ValidationIssue]) -> dict[str, int]:
+        return {
             "error": sum(1 for issue in issues if issue.severity == "error"),
             "warning": sum(1 for issue in issues if issue.severity == "warning"),
             "info": sum(1 for issue in issues if issue.severity == "info"),
         }
+
+    def _build_summary(self, counts: dict[str, int], passed: bool, returncode: int) -> str:
+        command_text = " ".join(self.command or [])
         counts_text = ", ".join(f"{severity}={counts[severity]}" for severity in ("error", "warning", "info"))
-        if passed and issues:
+        if passed and any(counts.values()):
             return f"{command_text} completed with non-blocking findings ({counts_text}; exit={returncode})."
         if passed:
             return f"{command_text} passed."

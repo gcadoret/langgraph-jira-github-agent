@@ -29,6 +29,7 @@ class AgentState(TypedDict, total=False):
     plan_model_choice: str
     plan_model_name: str
     execution_summary: str
+    validation_summary: str
     modified_files: list[str]
     review_summary: str
     pr_url: Optional[str]
@@ -125,6 +126,7 @@ _(notes: {state.get('notes','')})_
         review_feedback = ""
         preferred_files: list[str] = []
         execution_summary = ""
+        validation_summary = ""
         review_summary = ""
 
         for attempt in range(1, settings.max_review_iterations + 1):
@@ -172,6 +174,7 @@ _(notes: {state.get('notes','')})_
                 validation=validation,
             )
             execution_summary = implementation.summary
+            validation_summary = review.validation_summary
             review_summary = review.summary
             if review.approved and validation.passed:
                 final_files = changed_files or modified_files
@@ -192,6 +195,9 @@ _(notes: {state.get('notes','')})_
 ## Implémentation
 {implementation.summary}
 
+## Validation
+{validation_summary}
+
 ## Review
 {review.summary}
 
@@ -202,6 +208,7 @@ _(notes: {state.get('notes','')})_
                 return {
                     "pr_url": pr.get("html_url"),
                     "execution_summary": execution_summary,
+                    "validation_summary": validation_summary,
                     "review_summary": review_summary,
                     "modified_files": final_files,
                 }
@@ -234,6 +241,9 @@ Plan:
 
 Implémentation:
 {state.get('execution_summary','')}
+
+Validation:
+{state.get('validation_summary','')}
 
 Review:
 {state.get('review_summary','')}

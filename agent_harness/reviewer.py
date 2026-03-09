@@ -26,11 +26,13 @@ class ReviewResult:
     approved: bool
     summary: str
     feedback: str
+    validation_summary: str
     raw_response: str
 
 
 class CodeReviewer:
     def __init__(self, settings: Settings):
+        self._settings = settings
         self._llm = RoutedLLM(settings)
         prompt_store = PromptStore(settings.prompts_dir)
         prompt = prompt_store.load("review/default.md")
@@ -53,13 +55,18 @@ class CodeReviewer:
         validation: ValidationResult,
     ) -> ReviewResult:
         file_context = self._load_file_context(repo_path=repo_path, modified_files=modified_files)
-        prompt = "\n\n".join(
+        validation_summary = self._build_validation_summary(validation)
+        prompt_sections = [
+            f"Ticket: {issue_key}",
+            f"Titre: {issue_summary}",
+            f"Plan:\n{plan_markdown}",
+            f"Résumé d'implémentation:\n{implementation_summary}",
+            f"Politique de validation ({validation.validator_name}):\n{validation.review_guidance or '(aucune)'}",
+        ]
+        if validation_summary:
+            prompt_sections.append(f"Synthèse de validation:\n{validation_summary}")
+        prompt_sections.extend(
             [
-                f"Ticket: {issue_key}",
-                f"Titre: {issue_summary}",
-                f"Plan:\n{plan_markdown}",
-                f"Résumé d'implémentation:\n{implementation_summary}",
-                f"Politique de validation ({validation.validator_name}):\n{validation.review_guidance or '(aucune)'}",
                 (
                     "Validation:\n"
                     f"- status={validation.status}\n"
@@ -72,6 +79,7 @@ class CodeReviewer:
                 self._profile.instructions,
             ]
         )
+        prompt = "\n\n".join(prompt_sections)
         fallback_payload = {
             "approved": validation.passed,
             "summary": validation.summary,
@@ -92,8 +100,36 @@ class CodeReviewer:
             approved=approved,
             summary=summary,
             feedback=feedback,
+            validation_summary=validation_summary,
             raw_response=response.content,
         )
+
+    def _build_validation_summary(self, validation: ValidationResult) -> str:
+        if not self._settings.enable_validation_summary:
+            return ""
+
+        counts = (
+            f"errors={validation.error_count}, "
+            f"warnings={validation.warning_count}, "
+            f"infos={validation.info_count}"
+        )
+        lines = [
+            f"validator={validation.validator_name}",
+            f"status={validation.status}",
+        ]
+        if validation.command:
+            lines.append(f"command={validation.command}")
+        lines.append(f"counts={counts}")
+        lines.append(f"summary={validation.summary}")
+
+        finding_lines = [
+            raw_line.strip()
+            for raw_line in validation.output.splitlines()
+            if raw_line.strip() and re.match(r"^(error|warning|info)\b", raw_line.strip(), flags=re.IGNORECASE)
+        ][:3]
+        if finding_lines:
+            lines.append("top_findings=" + " | ".join(finding_lines))
+        return "\n".join(lines)
 
     def _load_file_context(self, repo_path: str, modified_files: list[str]) -> str:
         repo_root = Path(repo_path).expanduser().resolve()

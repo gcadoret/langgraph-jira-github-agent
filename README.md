@@ -1,20 +1,33 @@
-# LangGraph Jira→PR Minimal Agent Harness (Python)
+# LangGraph Jira -> Repo Agent
 
-This repository is a **minimal starter** (not a heavy-duty framework) for a single agent based on **LangGraph** that can:
-- Read a Jira ticket
-- Produce a plan (routed to an advanced LLM, or deterministic mock mode if no key is provided)
-- (Optional) Create a branch + a simple patch in a sandbox
-- Open a GitHub PR
-- Comment on the Jira ticket with the plan / PR link
+Agent Python minimal basé sur **LangGraph** pour :
 
-⚠️ By default, the project runs in **dry-run** mode: it does not modify anything until you explicitly enable it.
+- lire un ticket Jira
+- produire un plan technique
+- charger un contexte repo ciblé
+- proposer et appliquer des modifications de code
+- valider puis reviewer les changements
+- créer une branche, un commit, une PR GitHub
+- commenter le ticket Jira
 
-## 1) Prerequisites
+Le projet reste volontairement simple :
+
+- orchestration via LangGraph
+- routing explicite par `TaskType`
+- profils de validation configurés en Markdown
+- **dry-run par défaut**
+- peu de dépendances
+
+## Prérequis
+
 - Python 3.10+
-- (Optional) Git installed if you want to use the patch/PR mode
-- Jira (Cloud) and GitHub (token) access
+- Git
+- accès Jira Cloud
+- accès GitHub
+- un provider `ADVANCED` configuré pour planning / implementation / critique
+- optionnel : Ollama pour les tâches locales futures
 
-## 2) Installation
+## Installation
 
 ```bash
 python3 -m venv .venv
@@ -23,169 +36,228 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-## 3) Configuration
+## Configuration
 
-Copy `.env.example` to `.env` and fill in the necessary values:
+Créer le fichier `.env` :
 
 ```bash
 cp .env.example .env
 ```
 
-### Main variables
-- `JIRA_BASE_URL` ex: `https://your-org.atlassian.net`
-- `JIRA_EMAIL` + `JIRA_API_TOKEN` (Jira Cloud)
-- `JIRA_PROJECT_KEY` (optional, useful for creating tickets)
+Variables principales :
+
+- `JIRA_BASE_URL`
+- `JIRA_EMAIL`
+- `JIRA_API_TOKEN`
+- `JIRA_PROJECT_KEY` optionnel
 - `GITHUB_TOKEN`
-- `GITHUB_REPO` ex: `org/repo`
-- `DEFAULT_REPO_PATH` optional local repo path used when `--repo-path` is omitted
-- `ADVANCED_PROVIDER` ex: `openai` or `gemini`
-- `ADVANCED_API_KEY` for the advanced model (optional, planning falls back to a deterministic mock if absent)
-- `ADVANCED_MODEL_NAME` ex: `gpt-4.1-mini`
-- `ADVANCED_BASE_URL` optional override for provider-specific endpoints
-- `OLLAMA_BASE_URL` ex: `http://localhost:11434`
-- `OLLAMA_MODEL` ex: `llama3.1:8b`
-- `MAX_REVIEW_ITERATIONS` max revision loops for executor/reviewer in action mode
-- `PROMPTS_DIR` optional directory override for markdown-based validation/review profiles
+- `GITHUB_REPO`
+- `DEFAULT_REPO_PATH` chemin local par défaut si `--repo-path` est omis
+- `ADVANCED_PROVIDER` ex: `openai` ou `gemini`
+- `ADVANCED_API_KEY`
+- `ADVANCED_MODEL_NAME`
+- `ADVANCED_BASE_URL` optionnel
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `DRY_RUN`
+- `MAX_REVIEW_ITERATIONS`
+- `ENABLE_VALIDATION_SUMMARY`
+- `PROMPTS_DIR` pour surcharger les profils Markdown intégrés
 
-For backward compatibility, `OPENAI_API_KEY` is still accepted as a fallback, but `ADVANCED_API_KEY` is the preferred name.
+Compatibilité :
 
-## 4) Hybrid LLM Routing
+- `OPENAI_API_KEY` est encore accepté comme fallback de `ADVANCED_API_KEY`
 
-The project now uses an explicit `TaskType` enum and a small router instead of ad-hoc model selection.
+## Routing LLM
 
-### Task routing
-- `PLANNING` -> `ADVANCED`
-- `REASONING` -> `ADVANCED`
-- `CRITIQUE` -> `ADVANCED`
-- `JIRA_DRAFTING` -> `LOCAL`
-- `SUMMARIZATION` -> `LOCAL`
-- `FIELD_EXTRACTION` -> `LOCAL`
-- `FORMAT_TRANSFORMATION` -> `LOCAL`
-- `TOOL_SUPPORT` -> `LOCAL`
+Le routing est défini dans [router.py](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/router.py).
 
-### Components
-- `agent_harness/router.py`: explicit task-to-model mapping
-- `agent_harness/advanced_model.py`: advanced provider wrapper (`openai` or `gemini`)
-- `agent_harness/code_executor.py`: targeted code-edit executor for action mode
-- `agent_harness/ollama_client.py`: lightweight Ollama HTTP wrapper using `requests`
-- `agent_harness/repo_context.py`: cached repository context builder for planning
-- `agent_harness/reviewer.py`: review/critique agent for implementation feedback
-- `agent_harness/validators.py`: markdown-driven validation abstraction
-- `agent_harness/prompts/validation/*.md`: validation profiles (repo detection, commands, blocking severities)
-- `agent_harness/prompts/review/default.md`: reviewer prompt and excerpt policy
-- `agent_harness/llm.py`: routed LLM entrypoint used by the graph
+### Tâches `ADVANCED`
 
-Today, the LangGraph planning node uses `TaskType.PLANNING`, so planning always goes through the advanced route. When `--repo-path` is provided, the graph also loads a cached repository context and injects a targeted summary/snippets into the planning prompt. Operational local tasks are ready to use for future nodes such as Jira drafting or extraction.
-In `--action` mode, the graph now chains three intelligent agents: planner, executor, reviewer. The reviewer combines markdown-driven validation policies with an LLM critique, and the graph retries bounded revisions before commit/PR.
+- `PLANNING`
+- `IMPLEMENTATION`
+- `REASONING`
+- `CRITIQUE`
 
-## 4.1) Prompt-Driven Validation Profiles
+### Tâches `LOCAL`
 
-Validation and review rules are no longer meant to live primarily in Python classes. The project loads markdown profiles from `agent_harness/prompts/` by default:
+- `JIRA_DRAFTING`
+- `SUMMARIZATION`
+- `FIELD_EXTRACTION`
+- `FORMAT_TRANSFORMATION`
+- `TOOL_SUPPORT`
 
-- `validation/*.md` selects a validator profile based on repo markers such as `pubspec.yaml`
-- each validation profile defines repo markers, priority, command candidates, severity patterns, and blocking severities
-- `review/default.md` defines the reviewer system prompt, excerpt strategy, and review rules
+Important :
 
-Example `flutter.md` policy:
-- detect a Flutter repo with `pubspec.yaml`
-- try `flutter analyze`, then `dart analyze`
-- parse severities with configurable regex patterns
-- block only on `error`
-- keep `warning` and `info` as advisory findings
+- dans le flow principal actuel `--action`, le modèle local n’est pas requis
+- la synthèse de validation est maintenant **déterministe en Python**, pas générée par un LLM
 
-If you want to customize this without editing the package defaults, point `PROMPTS_DIR` to your own directory containing:
+## Flux d’exécution
+
+Le graphe principal est défini dans [graph.py](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/graph.py).
+
+### Dry-run
+
+1. lecture du ticket Jira
+2. chargement optionnel du contexte repo
+3. génération du plan
+4. commentaire Jira avec le plan
+
+### Action
+
+1. lecture du ticket Jira
+2. chargement du contexte repo
+3. planning
+4. création / checkout de branche
+5. proposition de changements de code
+6. application des changements
+7. validation projet
+8. review critique
+9. boucle de révision bornée
+10. commit, push, PR GitHub
+11. commentaire Jira final
+
+## Validation configurable par profils Markdown
+
+Les règles de validation ne sont pas codées via des classes techno spécifiques.
+
+Le moteur générique charge des profils depuis :
+
+- [agent_harness/prompts/validation/default.md](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/prompts/validation/default.md)
+- [agent_harness/prompts/validation/flutter.md](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/prompts/validation/flutter.md)
+
+Chaque profil peut définir :
+
+- `priority`
+- `match_files`
+- `command_candidates`
+- `severity_patterns`
+- `blocking_severities`
+- `allow_nonzero_without_blockers`
+
+Exemple Flutter :
+
+- détection via `pubspec.yaml`
+- tentative `flutter analyze`, puis `dart analyze`
+- `error` bloquant
+- `warning` et `info` non bloquants
+
+Le moteur est dans [validators.py](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/validators.py).
+
+## Reviewer
+
+Le reviewer est dans [reviewer.py](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/reviewer.py).
+
+Il combine :
+
+- le résultat du validateur
+- une synthèse déterministe optionnelle de validation
+- le contenu des fichiers modifiés
+- une critique `ADVANCED`
+
+La synthèse déterministe est contrôlée par :
+
+- `ENABLE_VALIDATION_SUMMARY=true|false`
+
+Quand elle est activée, elle est persistée :
+
+- dans l’état LangGraph
+- dans le corps de la PR
+- dans le commentaire Jira final
+
+## Prompts Markdown
+
+Les prompts et profils intégrés vivent dans :
+
+- [agent_harness/prompts/review/default.md](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/prompts/review/default.md)
+- [agent_harness/prompts/validation/](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/prompts/validation)
+
+Si `PROMPTS_DIR` est défini, le projet charge les fichiers depuis ce dossier à la place.
+
+Structure attendue :
 
 ```text
-<prompts-dir>/
+<PROMPTS_DIR>/
   review/
     default.md
   validation/
     default.md
     flutter.md
-    your_other_stack.md
+    ...
 ```
 
-### Advanced provider examples
-- OpenAI: `ADVANCED_PROVIDER=openai`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gpt-4.1-mini`
-- Gemini: `ADVANCED_PROVIDER=gemini`, `ADVANCED_API_KEY=...`, `ADVANCED_MODEL_NAME=gemini-2.5-pro`
+## Commandes
 
-For Gemini, the client applies bounded retries with exponential backoff on transient `429` and `5xx` responses.
-If the advanced provider still fails after retries, planning falls back to the deterministic mock plan so the graph can keep running.
+### Dry-run
 
-## 5) Running the Agent
-
-### Dry-run (recommended for starters)
 ```bash
 python3 -m agent_harness.run --issue KAN-1 --dry-run
 ```
-This command analyzes the specified Jira ticket (`--issue`) and posts an action plan as a comment, without making any code changes (no branch, commit, or Pull Request). This is the ideal mode for testing and validating the agent's plan.
 
-### "Action" mode (writes a simple patch + PR)
-```bash
-python3 -m agent_harness.run --issue <JIRA_KEY> --repo-path /path/to/your/repo --action
-```
-This command enables the "action" mode. Unlike dry-run, the agent will actually perform Git operations:
-1. It creates a new branch from the default branch of the specified repository (`--repo-path`).
-2. It applies a simple code patch (in this starter, it's a basic modification for demonstration purposes).
-3. It creates a commit and pushes the new branch to GitHub.
-4. Finally, it opens a Pull Request and updates the Jira ticket with a link to it.
-
-**Warning:** This mode actually modifies the Git repository. The path provided in `--repo-path` is mandatory.
-
-If you always work on the same repository, you can set `DEFAULT_REPO_PATH` in `.env` and shorten the command to:
+### Action avec repo explicite
 
 ```bash
-python3 -m agent_harness.run --issue <JIRA_KEY> --action
+python3 -m agent_harness.run --issue KAN-1 --repo-path /path/to/repo --action
 ```
 
-The CLI flag still has priority over the `.env` default.
+### Action avec `DEFAULT_REPO_PATH`
 
-## 6) What This Starter Actually Does
-- It doesn't claim to be Devin.
-- It gives you a clean skeleton:
-  - **LangGraph** for orchestration
-  - Isolated Jira/GitHub **tools**
-  - Explicit LLM routing by task type
-  - A deterministic fallback when no advanced model is configured
+```bash
+python3 -m agent_harness.run --issue KAN-1 --action
+```
 
-You can then:
-- Connect it to your CI (GitHub Actions / Jenkins / GitLab CI)
-- Add "guardrails" (action allowlists, limits, approvals)
-- Replace the "simple patch" with a real code→tests→fix loop
+Priorité :
+
+- le flag CLI `--repo-path` écrase `DEFAULT_REPO_PATH`
 
 ## Structure
 
-```
+```text
 agent_harness/
-  advanced_model.py   # Advanced model wrapper
-  graph.py            # LangGraph graph definition
-  run.py              # CLI entrypoint
-  config.py           # .env loader
-  llm.py              # Routed LLM entrypoint + planner wrapper
-  ollama_client.py    # Ollama HTTP wrapper
-  prompt_store.py     # Markdown prompt/profile loader
-  prompts/            # Built-in review and validation profiles
-  router.py           # TaskType -> model routing
-  task_types.py       # Explicit task categories
+  advanced_model.py
+  code_executor.py
+  config.py
+  graph.py
+  llm.py
+  ollama_client.py
+  prompt_store.py
+  repo_context.py
+  reviewer.py
+  router.py
+  run.py
+  task_types.py
+  validators.py
+  prompts/
+    review/
+    validation/
   tools/
-    jira.py           # Jira API (read/comment/create/update)
-    github.py         # GitHub API (create PR) + git helpers
-  sandbox.py          # Ephemeral workspace
+    github.py
+    jira.py
 tests/
-  test_code_executor.py # Lightweight implementation executor coverage
-  test_repo_context.py # Lightweight cached repo-context coverage
-  test_router.py      # Lightweight router coverage
 ```
 
-## 7) Testing
-
-Run the lightweight router tests with:
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests
 ```
 
-## Security Notes (to keep in mind)
-- Give the Jira/GitHub token **minimum required permissions**.
-- Keep **dry-run** mode as the default.
-- Log all actions (tool calls) and keep a run_id.
+Vérification syntaxe :
+
+```bash
+python3 -m compileall agent_harness tests
+```
+
+## Notes de conception
+
+- le projet n’essaie pas d’être un framework généraliste
+- le comportement par défaut reste prudent
+- la partie la plus configurable est la validation projet via Markdown
+- les décisions de planning / implementation / critique restent routées vers le modèle `ADVANCED`
+
+## Limites actuelles
+
+- la qualité d’implémentation dépend encore fortement du modèle `ADVANCED`
+- la boucle reviewer reste mono-agent côté critique finale
+- les profils de validation sont simples mais explicites
+- la stack LangChain / LangGraph peut être sensible aux versions Python les plus récentes

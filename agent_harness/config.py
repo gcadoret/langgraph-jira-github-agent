@@ -41,6 +41,7 @@ class Settings:
     max_review_iterations: int = int(os.getenv("MAX_REVIEW_ITERATIONS", "3"))
     prompts_dir: str | None = os.getenv("PROMPTS_DIR")
     enable_validation_summary: bool = os.getenv("ENABLE_VALIDATION_SUMMARY", "true").lower() in ("1", "true", "yes", "y")
+    verbose_logs: bool = os.getenv("VERBOSE_LOGS", "true").lower() in ("1", "true", "yes", "y")
 
 
 def get_settings() -> Settings:

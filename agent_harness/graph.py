@@ -43,8 +43,13 @@ def build_graph(settings: Settings):
     code_executor = CodeExecutor(settings, repo_context_builder=repo_context_builder)
     reviewer = CodeReviewer(settings)
 
+    def log_step(message: str) -> None:
+        if settings.verbose_logs:
+            print(f"[agent] {message}", flush=True)
+
     def load_issue(state: AgentState) -> dict:
         issue_key = state["issue_key"]
+        log_step(f"load_issue: fetching Jira issue {issue_key}")
         issue = jira.get_issue(issue_key)
         fields = issue.get("fields", {})
         summary = fields.get("summary") or ""
@@ -55,9 +60,11 @@ def build_graph(settings: Settings):
             desc_text = _adf_to_text(desc)
         else:
             desc_text = str(desc or "")
+        log_step(f"load_issue: summary loaded ({len(summary)} chars), description extracted ({len(desc_text)} chars)")
         return {"issue_summary": summary, "issue_description": desc_text}
 
     def make_plan(state: AgentState) -> dict:
+        log_step("make_plan: generating technical plan")
         res = planner.make_plan(
             state["issue_key"],
             state.get("issue_summary",""),
@@ -75,6 +82,10 @@ def build_graph(settings: Settings):
             notes += f"; repo_context_source={state['repo_context_source']}"
         if res.fallback_reason:
             notes += f"; fallback_reason={res.fallback_reason}"
+        log_step(
+            "make_plan: completed "
+            f"(route={res.model_choice.value}, model={res.model_name}, mock={str(res.is_mock).lower()})"
+        )
         return {
             "plan_markdown": res.plan_markdown,
             "plan_task_type": res.task_type.value,
@@ -86,8 +97,10 @@ def build_graph(settings: Settings):
     def load_repo_context(state: AgentState) -> dict:
         repo_path = state.get("repo_path")
         if not repo_path:
+            log_step("load_repo_context: disabled (no repo path)")
             return {"repo_context": "", "repo_context_source": "disabled"}
 
+        log_step(f"load_repo_context: building targeted repo context from {repo_path}")
         issue_text = " ".join(
             part for part in (
                 state.get("issue_key", ""),
@@ -97,12 +110,14 @@ def build_graph(settings: Settings):
             if part
         )
         context = repo_context_builder.build(repo_path=repo_path, issue_text=issue_text)
+        log_step(f"load_repo_context: completed (source={context.source})")
         return {
             "repo_context": context.summary_markdown,
             "repo_context_source": context.source,
         }
 
     def comment_plan(state: AgentState) -> dict:
+        log_step(f"comment_plan: posting plan comment to Jira for {state['issue_key']}")
         body = f"""Plan proposé par l'agent (dry-run={state.get('dry_run', True)})
 
 {state.get('plan_markdown','')}
@@ -110,6 +125,7 @@ def build_graph(settings: Settings):
 _(notes: {state.get('notes','')})_
 """
         jira.add_comment(state["issue_key"], body)
+        log_step("comment_plan: comment posted")
         return {}
 
     def implement_and_pr(state: AgentState) -> dict:
@@ -121,8 +137,10 @@ _(notes: {state.get('notes','')})_
         branch = f"fix/{issue_key.lower()}"
         from pathlib import Path
         repo_root = Path(repo_path)
+        log_step(f"implement_and_pr: checkout branch {branch}")
         git_checkout_branch(repo_root, branch=branch)
         validator = ProjectValidatorFactory.for_repo(repo_path, settings=settings)
+        log_step(f"implement_and_pr: validator selected ({validator.name})")
         review_feedback = ""
         preferred_files: list[str] = []
         execution_summary = ""
@@ -130,6 +148,7 @@ _(notes: {state.get('notes','')})_
         review_summary = ""
 
         for attempt in range(1, settings.max_review_iterations + 1):
+            log_step(f"implement_and_pr: iteration {attempt}/{settings.max_review_iterations}")
             implementation = code_executor.propose_changes(
                 issue_key=issue_key,
                 issue_summary=state.get("issue_summary", ""),
@@ -139,6 +158,8 @@ _(notes: {state.get('notes','')})_
                 review_feedback=review_feedback,
                 preferred_files=preferred_files,
             )
+            selected_files = ", ".join(implementation.selected_files) or "(none)"
+            log_step(f"implement_and_pr: proposed target files -> {selected_files}")
             if not implementation.updated_files:
                 review_feedback = "\n".join(
                     part for part in (
@@ -149,8 +170,8 @@ _(notes: {state.get('notes','')})_
                     if part
                 )
                 if attempt < settings.max_review_iterations:
+                    log_step("implement_and_pr: no code changes proposed, retrying with accumulated feedback")
                     continue
-                selected_files = ", ".join(implementation.selected_files) or "(none)"
                 raise RuntimeError(
                     "No code changes were proposed for action mode. "
                     f"selected_files={selected_files}; "
@@ -162,8 +183,16 @@ _(notes: {state.get('notes','')})_
             changed_files = git_changed_files(repo_root)
             if not modified_files and not changed_files:
                 raise RuntimeError("Code executor produced no effective file changes")
+            log_step(
+                "implement_and_pr: applied changes to "
+                f"{', '.join(changed_files or modified_files)}"
+            )
 
             validation = validator.validate(repo_path)
+            log_step(
+                "implement_and_pr: validation completed "
+                f"(status={validation.status}, summary={validation.summary})"
+            )
             review = reviewer.review(
                 issue_key=issue_key,
                 issue_summary=state.get("issue_summary", ""),
@@ -176,16 +205,23 @@ _(notes: {state.get('notes','')})_
             execution_summary = implementation.summary
             validation_summary = review.validation_summary
             review_summary = review.summary
+            log_step(
+                "implement_and_pr: review completed "
+                f"(approved={str(review.approved).lower()}, summary={review.summary})"
+            )
             if review.approved and validation.passed:
                 final_files = changed_files or modified_files
                 if not final_files:
                     raise RuntimeError("No changed files available after approved review")
                 commit_msg = f"AI: implement {issue_key}"
+                log_step(f"implement_and_pr: committing changes ({commit_msg})")
                 git_add_and_commit(repo_root, final_files, commit_msg)
+                log_step(f"implement_and_pr: pushing branch {branch}")
                 git_push(repo_root, branch=branch)
 
                 gh = GitHubClient.from_settings(settings)
                 changed_files_markdown = "\n".join(f"- {path}" for path in final_files)
+                log_step("implement_and_pr: creating GitHub pull request")
                 pr = gh.create_pull_request(
                     head=branch,
                     base="main",
@@ -205,6 +241,7 @@ _(notes: {state.get('notes','')})_
 {changed_files_markdown}
 """,
                 )
+                log_step(f"implement_and_pr: pull request created ({pr.get('html_url')})")
                 return {
                     "pr_url": pr.get("html_url"),
                     "execution_summary": execution_summary,
@@ -223,6 +260,7 @@ _(notes: {state.get('notes','')})_
                 )
                 if part
             )
+            log_step("implement_and_pr: change rejected, preparing next iteration")
 
         raise RuntimeError(
             "Reviewer rejected the implementation after max iterations. "
@@ -233,6 +271,7 @@ _(notes: {state.get('notes','')})_
 
     def comment_pr(state: AgentState) -> dict:
         pr_url = state.get("pr_url")
+        log_step(f"comment_pr: posting final Jira comment with PR {pr_url}")
         modified_files = "\n".join(f"- {path}" for path in state.get("modified_files", []))
         body = f"""J'ai ouvert une PR: {pr_url}
 
@@ -252,6 +291,7 @@ Fichiers modifiés:
 {modified_files or '- (non renseigné)'}
 """
         jira.add_comment(state["issue_key"], body)
+        log_step("comment_pr: comment posted")
         return {}
 
     def route_after_plan(state: AgentState) -> str:

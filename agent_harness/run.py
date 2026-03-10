@@ -26,6 +26,13 @@ def main():
     if not dry_run and not repo_path:
         raise SystemExit("--repo-path requis en mode --action")
 
+    mode = "dry-run" if dry_run else "action"
+    if settings.verbose_logs:
+        print(
+            f"[agent] start: issue={args.issue}, mode={mode}, repo_path={repo_path or '(none)'}",
+            flush=True,
+        )
+
     graph = build_graph(settings)
     initial_state = {
         "issue_key": args.issue,
@@ -33,6 +40,8 @@ def main():
         "repo_path": repo_path,
     }
     result = graph.invoke(initial_state)
+    if settings.verbose_logs:
+        print("[agent] done: graph execution completed", flush=True)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

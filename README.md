@@ -62,6 +62,7 @@ Variables principales :
 - `DRY_RUN`
 - `MAX_REVIEW_ITERATIONS`
 - `ENABLE_VALIDATION_SUMMARY`
+- `VERBOSE_LOGS`
 - `PROMPTS_DIR` pour surcharger les profils Markdown intégrés
 
 Compatibilité :
@@ -116,6 +117,52 @@ Le graphe principal est défini dans [graph.py](/Users/guillaumecadoret/devperso
 9. boucle de révision bornée
 10. commit, push, PR GitHub
 11. commentaire Jira final
+
+#### Détail de chaque étape
+
+1. `lecture du ticket Jira`
+
+Le graphe appelle le client Jira pour récupérer le ticket demandé par `--issue`. Il lit principalement le `summary` et la `description`, puis convertit la description Jira en texte simple si elle est stockée au format ADF. Cette étape ne touche pas au repo local ; elle sert à construire le contexte minimal de travail partagé par la suite.
+
+2. `chargement du contexte repo`
+
+Si `repo_path` est disponible, l’agent construit un contexte repo ciblé via [repo_context.py](/Users/guillaumecadoret/devperso/LanggraphJiraGithubAgent/agent_harness/repo_context.py). Concrètement, il scanne la structure du dépôt, met en cache un index léger, puis sélectionne quelques fichiers et extraits pertinents par rapport au ticket. L’objectif n’est pas de donner tout le repo au modèle, mais un sous-ensemble utile pour le planning et l’implémentation.
+
+3. `planning`
+
+Le planner prend le ticket Jira et le contexte repo ciblé, puis génère un plan en Markdown. Ce plan sert de contrat de travail pour la suite : il donne l’intention, les zones de code probables, les tests à lancer et les risques à surveiller. Si le provider `ADVANCED` n’est pas disponible, le planner retombe sur un plan mock déterministe afin de ne pas bloquer tout le flow.
+
+4. `création / checkout de branche`
+
+En mode `--action`, le graphe prépare la branche de travail locale avant d’entrer dans la boucle d’implémentation. Cette étape se contente de faire le `checkout` d’une branche dédiée au ticket, pour isoler les changements générés et éviter de polluer la branche courante. Elle ne crée pas encore de commit.
+
+5. `proposition de changements de code`
+
+Le `CodeExecutor` choisit un ensemble limité de fichiers cibles à partir du ticket, du plan, du contexte repo, et éventuellement du feedback de la tentative précédente. Il envoie ensuite au modèle `ADVANCED` le ticket, le plan et le contenu de ces fichiers pour lui demander une proposition de modifications structurée. À cette étape, on est encore dans la phase “proposer”, pas “valider”.
+
+6. `application des changements`
+
+Si la proposition contient bien des fichiers mis à jour, l’executor écrit ces contenus dans le repo cible. L’agent compare ensuite l’état Git pour confirmer qu’il y a de vrais changements effectifs. Si la proposition ne produit aucun diff réel, l’itération est considérée comme un échec et le flow tente une nouvelle passe ou s’arrête selon le nombre d’essais restants.
+
+7. `validation projet`
+
+Une fois les fichiers écrits, l’agent lance un validateur projet choisi via les profils Markdown de validation. Le moteur détecte le type de repo à partir de marqueurs comme `pubspec.yaml`, sélectionne une commande candidate, exécute cette commande, puis parse les findings selon les patterns de sévérité du profil. Le résultat produit un `status`, un résumé, des compteurs `error/warning/info` et la sortie brute du validateur.
+
+8. `review critique`
+
+Le reviewer prend le plan, le résumé d’implémentation, le résultat de validation, une synthèse déterministe optionnelle de validation, et un extrait des fichiers modifiés. Il demande ensuite au modèle `ADVANCED` une critique structurée : changement approuvé ou non, résumé, et feedback actionnable pour l’itération suivante. Le reviewer est volontairement plus strict que l’executor : son rôle est de refuser un patch risqué, incomplet ou incohérent.
+
+9. `boucle de révision bornée`
+
+Si la validation ou le reviewer rejettent la proposition, le graphe ne commit pas immédiatement. Il repart dans une nouvelle itération avec le feedback accumulé, les fichiers déjà modifiés et le contexte précédent pour tenter une correction. Cette boucle est bornée par `MAX_REVIEW_ITERATIONS`, ce qui évite de tourner indéfiniment en cas de patch médiocre ou de ticket trop ambigu.
+
+10. `commit, push, PR GitHub`
+
+Une fois qu’une proposition est à la fois validée et approuvée, l’agent prépare le commit Git sur la branche dédiée, pousse la branche vers le remote, puis ouvre une Pull Request GitHub. Le corps de la PR inclut le plan, un résumé de l’implémentation, la synthèse de validation si activée, le résumé de review et la liste des fichiers modifiés. Tant que cette étape n’est pas atteinte, rien n’est poussé vers GitHub.
+
+11. `commentaire Jira final`
+
+Après création de la PR, l’agent poste un commentaire final sur le ticket Jira avec l’URL de la PR et un résumé compact de ce qui a été fait. Le commentaire reprend le plan, le résumé d’implémentation, le résumé de review, la synthèse de validation si elle est activée, et les fichiers modifiés. Cette étape sert surtout de trace opérationnelle pour que le ticket reflète l’état réel du travail effectué par l’agent.
 
 ## Validation configurable par profils Markdown
 
